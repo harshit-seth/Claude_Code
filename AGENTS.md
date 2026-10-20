@@ -6,7 +6,7 @@ A terminal coding agent written in Python, built as a portfolio project for SDE1
 
 - Python 3.10 or newer
 - `src/` package layout with the `claude_code` import package
-- OpenAI SDK for OpenAI-compatible providers configured with a base URL and API key
+- Anthropic SDK for Claude API access
 - Rich, prompt_toolkit, and python-dotenv
 - pytest for development tests
 
@@ -17,6 +17,10 @@ A terminal coding agent written in Python, built as a portfolio project for SDE1
 - Do not add code beyond the requested feature.
 - Explain non-obvious design choices in one or two lines.
 - Keep the implementation clean, tested, and easy to explain.
+- Read `ANTHROPIC_API_KEY` from the environment or a local `.env` file.
+- Keep the model selection in the single `MODEL` constant in `config.py`.
+- The CLI streams replies and supports `/exit` and `/clear`; do not add tools
+  until they are requested.
 
 ## Run tests
 
@@ -24,4 +28,11 @@ Run the test suite from the project root:
 
 ```powershell
 python -m pytest
+```
+
+Install the package and development dependencies, then start the CLI:
+
+```powershell
+python -m pip install -e ".[dev]"
+claude-code
 ```

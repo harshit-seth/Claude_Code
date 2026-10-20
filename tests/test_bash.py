@@ -4,14 +4,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from agent.tools import BashTool
-
-
-def test_bash_requires_approval_callback(tmp_path: Path) -> None:
-    with pytest.raises(PermissionError, match="explicit user approval"):
-        BashTool(tmp_path).run(command="echo unsafe")
 
 
 def test_bash_runs_approved_command_and_formats_result(
@@ -25,7 +18,7 @@ def test_bash_runs_approved_command_and_formats_result(
         return SimpleNamespace(returncode=3, stdout="result\n", stderr="warning\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    tool = BashTool(tmp_path, approval_callback=lambda command: command == "pytest")
+    tool = BashTool(tmp_path)
 
     result = tool.run(command="pytest")
 
@@ -36,19 +29,6 @@ def test_bash_runs_approved_command_and_formats_result(
     assert "Exit code: 3" in result
     assert "STDOUT:\nresult\n" in result
     assert "STDERR:\nwarning\n" in result
-
-
-def test_bash_does_not_run_denied_command(monkeypatch, tmp_path: Path) -> None:
-    def fail_if_run(command, **kwargs):
-        raise AssertionError(f"Denied command ran: {command}, {kwargs}")
-
-    monkeypatch.setattr(subprocess, "run", fail_if_run)
-
-    result = BashTool(tmp_path, approval_callback=lambda command: command == "allow").run(
-        command="anything"
-    )
-
-    assert result == "Command execution denied by user."
 
 
 def test_bash_reports_timeout_and_truncates_output(
@@ -65,7 +45,7 @@ def test_bash_reports_timeout_and_truncates_output(
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    tool = BashTool(tmp_path, approval_callback=lambda command: command == "slow")
+    tool = BashTool(tmp_path)
 
     result = tool.run(command="slow")
 

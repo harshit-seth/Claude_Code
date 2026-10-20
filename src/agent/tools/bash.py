@@ -1,7 +1,6 @@
 """Run an explicitly approved shell command in the project root."""
 
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +12,12 @@ TRUNCATION_NOTE = "\n... (command output truncated)"
 
 
 class BashTool(Tool):
-    """Run shell commands only after explicit approval."""
+    """Run shell commands after the agent loop authorizes the tool call."""
 
     name = "bash"
     description = (
-        "Run a shell command in the project root. The user must approve each "
-        "command before it runs; stdout, stderr, and exit code are returned."
+        "Run a shell command in the project root; the agent permission system "
+        "must authorize it first. Returns stdout, stderr, and exit code."
     )
     input_schema: dict[str, Any] = {
         "type": "object",
@@ -28,23 +27,13 @@ class BashTool(Tool):
         "required": ["command"],
     }
 
-    def __init__(
-        self,
-        project_root: Path,
-        approval_callback: Callable[[str], bool] | None = None,
-    ) -> None:
-        """Set the command working directory and optional approval callback."""
+    def __init__(self, project_root: Path) -> None:
+        """Set the command working directory."""
         self._project_root = project_root.resolve()
-        self._approval_callback = approval_callback
 
     def run(self, **kwargs: Any) -> str:
-        """Run an approved command with a timeout and bounded output."""
+        """Run a command with a timeout and bounded output."""
         command = kwargs["command"]
-        if self._approval_callback is None:
-            raise PermissionError("Shell commands require explicit user approval.")
-        if not self._approval_callback(command):
-            return "Command execution denied by user."
-
         try:
             result = subprocess.run(
                 command,
@@ -97,4 +86,3 @@ def _to_text(output: str | bytes | None) -> str:
     if isinstance(output, bytes):
         return output.decode(errors="replace")
     return output or ""
-

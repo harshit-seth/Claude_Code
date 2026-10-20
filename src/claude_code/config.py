@@ -7,6 +7,7 @@ from typing import Final
 from dotenv import find_dotenv, load_dotenv
 
 MODEL: Final = "openai/gpt-oss-120b"
+MODEL_CONTEXT_WINDOW: Final = 131_072
 
 
 @dataclass(frozen=True)

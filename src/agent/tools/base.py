@@ -1,6 +1,7 @@
 """Base classes and registry for agent tools."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,19 @@ class ToolRegistry:
             }
             for tool in self._tools.values()
         ]
+
+    def filtered(self, names: Iterable[str]) -> "ToolRegistry":
+        """Return a registry exposing only the named tools."""
+        requested_names = set(names)
+        unknown_names = requested_names - self._tools.keys()
+        if unknown_names:
+            raise ValueError(f"Unknown tools: {', '.join(sorted(unknown_names))}.")
+
+        registry = ToolRegistry()
+        for name, tool in self._tools.items():
+            if name in requested_names:
+                registry.register(tool)
+        return registry
 
     def execute(self, name: str, **kwargs: Any) -> str:
         """Run a named tool and report any execution error as text."""

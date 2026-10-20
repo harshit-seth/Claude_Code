@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import claude_code.cli as cli
+from claude_code.context import ContextManager
 from claude_code.llm import LLMResponse
 
 
@@ -43,11 +44,37 @@ def test_main_streams_reply_and_exits(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(api_key="test-key"))
     monkeypatch.setattr(cli, "LLMClient", FakeClient)
     monkeypatch.setattr(cli, "PromptSession", FakeSession)
+    monkeypatch.setattr(
+        cli,
+        "ContextManager",
+        lambda: ContextManager(token_counter=lambda messages: len(messages) + 11),
+    )
 
-    cli.main()
+    cli.main([])
 
     assert received_messages == [
         [{"role": "user", "content": "Hello"}],
         [{"role": "user", "content": "Again"}],
     ]
-    assert capsys.readouterr().out.count("Claude> Hi there") == 2
+    output = capsys.readouterr().out
+    assert output.count("Hi there") == 2
+    assert output.count("tokens 12/131,072") == 2
+
+
+def test_yolo_flag_displays_warning_and_exits(monkeypatch, capsys) -> None:
+    class FakeSession:
+        def prompt(self, message: str) -> str:
+            assert message == "You> "
+            return "/exit"
+
+    class FakeClient:
+        def __init__(self, api_key: str) -> None:
+            assert api_key == "test-key"
+
+    monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(api_key="test-key"))
+    monkeypatch.setattr(cli, "LLMClient", FakeClient)
+    monkeypatch.setattr(cli, "PromptSession", FakeSession)
+
+    cli.main(["--yolo"])
+
+    assert "--yolo skips all mutating-tool approval prompts" in capsys.readouterr().out

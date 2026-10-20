@@ -50,6 +50,24 @@ def test_registry_returns_errors_and_rejects_duplicate_names() -> None:
         registry.register(EchoTool())
 
 
+def test_registry_filter_only_exposes_selected_tools() -> None:
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    registry.register(ReadFileTool(Path.cwd()))
+
+    filtered = registry.filtered({"read_file"})
+
+    assert [tool["function"]["name"] for tool in filtered.get_definitions()] == [
+        "read_file"
+    ]
+    assert filtered.execute("echo", message="hello") == "Error: unknown tool 'echo'."
+
+
+def test_registry_filter_rejects_unknown_names() -> None:
+    with pytest.raises(ValueError, match="Unknown tools"):
+        ToolRegistry().filtered({"missing"})
+
+
 def test_read_file_returns_numbered_contents(tmp_path: Path) -> None:
     (tmp_path / "sample.txt").write_text("first\nsecond\n", encoding="utf-8")
 

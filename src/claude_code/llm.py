@@ -9,6 +9,7 @@ from typing import Any
 from openai import APIStatusError, OpenAI
 
 from claude_code.config import MODEL
+from claude_code.context import SUMMARY_PROMPT
 
 MAX_RETRIES = 3
 INITIAL_RETRY_DELAY_SECONDS = 1.0
@@ -109,3 +110,21 @@ class LLMClient:
                 time.sleep(INITIAL_RETRY_DELAY_SECONDS * (2**attempt))
 
         raise RuntimeError("Groq request exhausted retries without a response.")
+
+    def summarize(self, messages: Sequence[dict[str, Any]]) -> str:
+        """Summarize older conversation messages using the configured model."""
+        response = self._client.chat.completions.create(
+            model=MODEL,
+            max_tokens=1024,
+            messages=[
+                {"role": "system", "content": SUMMARY_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(messages, ensure_ascii=False),
+                },
+            ],
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("Model returned an empty conversation summary.")
+        return content

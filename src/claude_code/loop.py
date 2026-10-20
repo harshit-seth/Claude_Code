@@ -5,7 +5,9 @@ from collections.abc import Callable
 from typing import Any
 
 from agent.tools.base import ToolRegistry
+from claude_code.context import ContextManager, TokenUsage
 from claude_code.llm import LLMClient, LLMResponse, ToolCall
+from claude_code.permissions import PermissionManager
 
 DEFAULT_MAX_ITERATIONS = 25
 
@@ -17,6 +19,9 @@ def run_agent_loop(
     system_prompt: str,
     on_text: Callable[[str], None],
     on_tool_call: Callable[[str, dict[str, Any]], None],
+    permission_manager: PermissionManager,
+    context_manager: ContextManager,
+    on_token_usage: Callable[[TokenUsage], None],
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ) -> None:
     """Run model and tool turns, appending each exchange to conversation history."""
@@ -25,6 +30,8 @@ def run_agent_loop(
 
     tool_definitions = tool_registry.get_definitions()
     for iteration in range(max_iterations):
+        usage = context_manager.compact_if_needed(messages, llm_client)
+        on_token_usage(usage)
         response = llm_client.stream_response(
             messages=messages,
             system_prompt=system_prompt,
@@ -41,7 +48,13 @@ def run_agent_loop(
             )
 
         tool_results = [
-            _execute_tool(call, tool_registry, on_tool_call)
+            _execute_tool(
+                call,
+                tool_registry,
+                on_tool_call,
+                permission_manager,
+                context_manager,
+            )
             for call in response.tool_calls
         ]
         messages.extend(tool_results)
@@ -69,11 +82,19 @@ def _execute_tool(
     call: ToolCall,
     tool_registry: ToolRegistry,
     on_tool_call: Callable[[str, dict[str, Any]], None],
+    permission_manager: PermissionManager,
+    context_manager: ContextManager,
 ) -> dict[str, Any]:
     """Notify the UI and return a result block for a model tool call."""
     arguments = call.arguments
     on_tool_call(call.name, arguments)
-    result = tool_registry.execute(call.name, **arguments)
+    denial_message = permission_manager.authorize(call.name, arguments)
+    result = (
+        denial_message
+        if denial_message is not None
+        else tool_registry.execute(call.name, **arguments)
+    )
+    result = context_manager.truncate_tool_output(result)
     return {
         "role": "tool",
         "tool_call_id": call.id,

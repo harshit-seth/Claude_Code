@@ -17,12 +17,21 @@ A terminal coding agent written in Python, built as a portfolio project for SDE1
 - Implement tools with the `Tool` base class and register them with
   `ToolRegistry`; filesystem tools must stay within the project root.
 - `bash` commands must require explicit user approval before execution.
+- Read-only tools run without a prompt; mutating tools require confirmation
+  unless approved for the session or `--yolo` is explicitly selected.
+- Dangerous bash command patterns are always blocked, including in `--yolo`.
 - Do not add code beyond the requested feature.
 - Explain non-obvious design choices in one or two lines.
 - Keep the implementation clean, tested, and easy to explain.
 - Read `GROQ_API_KEY` from the environment or a local `.env` file.
+- Conversation token counting uses the Anthropic token-count endpoint when the
+  optional `ANTHROPIC_API_KEY` is set; otherwise it shows a character-based estimate.
 - Keep the model selection in the single `MODEL` constant in `config.py`.
-- The CLI streams replies and supports `/exit` and `/clear`.
+- The CLI streams replies and supports `/exit`, `/clear`, `/init`, and `/plan`.
+- Project-specific instructions are loaded from the root `AGENT.md`; `/init`
+  explores the repository and applies the existing tool approval policy before
+  writing that file.
+- `/plan` uses only read-only tools until the user approves the plan.
 
 ## Run tests
 

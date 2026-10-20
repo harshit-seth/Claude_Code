@@ -1,6 +1,7 @@
 """Tests for language model streaming."""
 
 import pytest
+from anthropic.types import Message
 
 import claude_code.llm as llm
 
@@ -16,7 +17,7 @@ def test_stream_retries_rate_limit_and_overloaded_errors(
         def __init__(self, error_status_code: int) -> None:
             self.status_code = error_status_code
 
-    class FakeStream:
+    class FakeResponse:
         @property
         def text_stream(self):
             return iter(("Hello", " there"))
@@ -32,13 +33,17 @@ def test_stream_retries_rate_limit_and_overloaded_errors(
             assert (exc_type, exc_value, traceback) == (None, None, None)
             return None
 
-    class FakeMessages:
-        def stream(self, model, max_tokens, system, messages) -> FakeStream:
-            assert model == llm.MODEL
-            assert max_tokens == 4096
-            assert system == "system"
-            assert messages == []
-            return FakeStream()
+        def get_final_message(self) -> Message:
+            return Message.model_construct(
+                id="message-id",
+                content=[],
+                model=llm.MODEL,
+                role="assistant",
+                stop_reason="end_turn",
+                stop_sequence=None,
+                type="message",
+                usage=None,
+            )
 
     class FakeAnthropic:
         def __init__(self, *, api_key: str, max_retries: int) -> None:
@@ -46,12 +51,25 @@ def test_stream_retries_rate_limit_and_overloaded_errors(
             assert max_retries == 0
             self.messages = FakeMessages()
 
+    class FakeMessages:
+        def stream(self, model, max_tokens, system, messages, tools) -> FakeResponse:
+            assert model == llm.MODEL
+            assert max_tokens == 4096
+            assert system == "system"
+            assert messages == []
+            assert tools == []
+            return FakeResponse()
+
     monkeypatch.setattr(llm, "APIStatusError", FakeStatusError)
     monkeypatch.setattr(llm, "Anthropic", FakeAnthropic)
     monkeypatch.setattr(llm.time, "sleep", delays.append)
 
     client = llm.LLMClient("test-key")
 
-    assert list(client.stream([], "system")) == ["Hello", " there"]
+    text_parts = []
+    response = client.stream_response([], "system", [], text_parts.append)
+
+    assert text_parts == ["Hello", " there"]
+    assert response.stop_reason == "end_turn"
     assert attempts == 2
     assert delays == [llm.INITIAL_RETRY_DELAY_SECONDS]

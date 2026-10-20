@@ -14,13 +14,14 @@ A terminal coding agent written in Python, built as a portfolio project for SDE1
 
 - Keep functions small, use type hints, and write concise docstrings.
 - Add a test for every tool.
+- Implement tools with the `Tool` base class and register them with
+  `ToolRegistry`; filesystem tools must stay within the project root.
 - Do not add code beyond the requested feature.
 - Explain non-obvious design choices in one or two lines.
 - Keep the implementation clean, tested, and easy to explain.
 - Read `ANTHROPIC_API_KEY` from the environment or a local `.env` file.
 - Keep the model selection in the single `MODEL` constant in `config.py`.
-- The CLI streams replies and supports `/exit` and `/clear`; do not add tools
-  until they are requested.
+- The CLI streams replies and supports `/exit` and `/clear`.
 
 ## Run tests
 

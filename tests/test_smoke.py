@@ -21,8 +21,17 @@ def test_main_streams_reply_and_exits(monkeypatch, capsys) -> None:
             assert api_key == "test-key"
 
         def stream_response(self, messages, system_prompt, tools, on_text) -> Message:
-            assert system_prompt == cli.SYSTEM_PROMPT
-            assert tools
+            assert system_prompt.startswith(cli.SYSTEM_PROMPT)
+            assert str(cli.Path.cwd()) in system_prompt
+            assert {tool["name"] for tool in tools} == {
+                "read_file",
+                "list_dir",
+                "grep",
+                "glob",
+                "write_file",
+                "edit_file",
+                "bash",
+            }
             received_messages.append(list(messages))
             on_text("Hi")
             on_text(" there")

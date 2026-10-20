@@ -16,6 +16,7 @@ A terminal coding agent written in Python, built as a portfolio project for SDE1
 - Add a test for every tool.
 - Implement tools with the `Tool` base class and register them with
   `ToolRegistry`; filesystem tools must stay within the project root.
+- `bash` commands must require explicit user approval before execution.
 - Do not add code beyond the requested feature.
 - Explain non-obvious design choices in one or two lines.
 - Keep the implementation clean, tested, and easy to explain.

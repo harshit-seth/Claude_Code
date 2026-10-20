@@ -1,18 +1,17 @@
 """Agent interaction loop."""
 
+import json
 from collections.abc import Callable
 from typing import Any
 
-from anthropic.types import MessageParam, ToolUseBlock
-
 from agent.tools.base import ToolRegistry
-from claude_code.llm import LLMClient
+from claude_code.llm import LLMClient, LLMResponse, ToolCall
 
 DEFAULT_MAX_ITERATIONS = 25
 
 
 def run_agent_loop(
-    messages: list[MessageParam],
+    messages: list[dict[str, Any]],
     llm_client: LLMClient,
     tool_registry: ToolRegistry,
     system_prompt: str,
@@ -32,9 +31,9 @@ def run_agent_loop(
             tools=tool_definitions,
             on_text=on_text,
         )
-        messages.append({"role": "assistant", "content": response.content})
+        messages.append(_assistant_message(response))
 
-        if response.stop_reason != "tool_use":
+        if not response.tool_calls:
             return
         if iteration == max_iterations - 1:
             raise RuntimeError(
@@ -42,26 +41,47 @@ def run_agent_loop(
             )
 
         tool_results = [
-            _execute_tool(block, tool_registry, on_tool_call)
-            for block in response.content
-            if isinstance(block, ToolUseBlock)
+            _execute_tool(call, tool_registry, on_tool_call)
+            for call in response.tool_calls
         ]
-        if not tool_results:
-            raise RuntimeError("Model requested tool use without a tool call.")
-        messages.append({"role": "user", "content": tool_results})
+        messages.extend(tool_results)
+
+
+def _assistant_message(response: LLMResponse) -> dict[str, Any]:
+    """Serialize an assistant response in OpenAI-compatible message format."""
+    message: dict[str, Any] = {"role": "assistant", "content": response.content}
+    if response.tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": _serialize_arguments(call.arguments),
+                },
+            }
+            for call in response.tool_calls
+        ]
+    return message
 
 
 def _execute_tool(
-    block: ToolUseBlock,
+    call: ToolCall,
     tool_registry: ToolRegistry,
     on_tool_call: Callable[[str, dict[str, Any]], None],
 ) -> dict[str, Any]:
     """Notify the UI and return a result block for a model tool call."""
-    arguments = dict(block.input)
-    on_tool_call(block.name, arguments)
-    result = tool_registry.execute(block.name, **arguments)
+    arguments = call.arguments
+    on_tool_call(call.name, arguments)
+    result = tool_registry.execute(call.name, **arguments)
     return {
-        "type": "tool_result",
-        "tool_use_id": block.id,
+        "role": "tool",
+        "tool_call_id": call.id,
+        "name": call.name,
         "content": result,
     }
+
+
+def _serialize_arguments(arguments: dict[str, Any]) -> str:
+    """Serialize tool arguments for the assistant history message."""
+    return json.dumps(arguments)

@@ -18,7 +18,7 @@ class Tool(ABC):
 
 
 class ToolRegistry:
-    """Register tools and expose them in Anthropic's tool format."""
+    """Register tools and expose them in OpenAI-compatible tool format."""
 
     def __init__(self) -> None:
         """Initialize an empty tool registry."""
@@ -31,12 +31,15 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     def get_definitions(self) -> list[dict[str, Any]]:
-        """Return registered tools as Anthropic API definitions."""
+        """Return registered tools as OpenAI-compatible API definitions."""
         return [
             {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.input_schema,
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                },
             }
             for tool in self._tools.values()
         ]

@@ -3,7 +3,6 @@
 from pathlib import Path
 from typing import Any
 
-from anthropic.types import MessageParam
 from prompt_toolkit import PromptSession
 from rich.console import Console
 
@@ -41,7 +40,7 @@ def main() -> None:
     client = LLMClient(config.api_key)
     session: PromptSession[str] = PromptSession()
     console = Console()
-    history: list[MessageParam] = []
+    history: list[dict[str, Any]] = []
     tool_registry = ToolRegistry()
     project_root = Path.cwd()
     tool_registry.register(ReadFileTool(project_root))

@@ -2,9 +2,8 @@
 
 from types import SimpleNamespace
 
-from anthropic.types import Message
-
 import claude_code.cli as cli
+from claude_code.llm import LLMResponse
 
 
 def test_main_streams_reply_and_exits(monkeypatch, capsys) -> None:
@@ -20,10 +19,10 @@ def test_main_streams_reply_and_exits(monkeypatch, capsys) -> None:
         def __init__(self, api_key: str) -> None:
             assert api_key == "test-key"
 
-        def stream_response(self, messages, system_prompt, tools, on_text) -> Message:
+        def stream_response(self, messages, system_prompt, tools, on_text) -> LLMResponse:
             assert system_prompt.startswith(cli.SYSTEM_PROMPT)
             assert str(cli.Path.cwd()) in system_prompt
-            assert {tool["name"] for tool in tools} == {
+            assert {tool["function"]["name"] for tool in tools} == {
                 "read_file",
                 "list_dir",
                 "grep",
@@ -35,15 +34,10 @@ def test_main_streams_reply_and_exits(monkeypatch, capsys) -> None:
             received_messages.append(list(messages))
             on_text("Hi")
             on_text(" there")
-            return Message.model_construct(
-                id="message-id",
-                content=[],
-                model="test-model",
-                role="assistant",
-                stop_reason="end_turn",
-                stop_sequence=None,
-                type="message",
-                usage=None,
+            return LLMResponse(
+                content="Hi there",
+                tool_calls=[],
+                finish_reason="stop",
             )
 
     monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(api_key="test-key"))

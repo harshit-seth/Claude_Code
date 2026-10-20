@@ -6,7 +6,7 @@ A terminal coding agent written in Python, built as a portfolio project for SDE1
 
 - Python 3.10 or newer
 - `src/` package layout with the `claude_code` import package
-- Anthropic SDK for Claude API access
+- OpenAI SDK configured for Groq's OpenAI-compatible API
 - Rich, prompt_toolkit, and python-dotenv
 - pytest for development tests
 
@@ -20,7 +20,7 @@ A terminal coding agent written in Python, built as a portfolio project for SDE1
 - Do not add code beyond the requested feature.
 - Explain non-obvious design choices in one or two lines.
 - Keep the implementation clean, tested, and easy to explain.
-- Read `ANTHROPIC_API_KEY` from the environment or a local `.env` file.
+- Read `GROQ_API_KEY` from the environment or a local `.env` file.
 - Keep the model selection in the single `MODEL` constant in `config.py`.
 - The CLI streams replies and supports `/exit` and `/clear`.
 

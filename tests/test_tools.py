@@ -29,9 +29,12 @@ def test_registry_registers_definitions_and_executes_tools() -> None:
 
     assert registry.get_definitions() == [
         {
-            "name": "echo",
-            "description": "Return the provided message.",
-            "input_schema": tool.input_schema,
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "Return the provided message.",
+                "parameters": tool.input_schema,
+            },
         }
     ]
     assert registry.execute("echo", message="hello") == "hello"

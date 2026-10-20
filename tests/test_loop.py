@@ -3,9 +3,9 @@
 from typing import Any
 
 import pytest
-from anthropic.types import Message, TextBlock, ToolUseBlock
 
 from agent.tools.base import Tool, ToolRegistry
+from claude_code.llm import LLMResponse, ToolCall
 from claude_code.loop import run_agent_loop
 
 
@@ -21,37 +21,26 @@ class ReadTool(Tool):
 
 
 def test_agent_loop_executes_tool_then_returns_final_answer() -> None:
-    tool_call = ToolUseBlock.model_construct(
-        id="toolu_123",
-        input={"path": "src/main.py"},
-        name="read_file",
-        type="tool_use",
+    tool_response = LLMResponse(
+        content=None,
+        tool_calls=[
+            ToolCall(
+                id="call_123",
+                name="read_file",
+                arguments={"path": "src/main.py"},
+            ),
+            ToolCall(
+                id="call_456",
+                name="read_file",
+                arguments={"path": "src/cli.py"},
+            ),
+        ],
+        finish_reason="tool_calls",
     )
-    second_tool_call = ToolUseBlock.model_construct(
-        id="toolu_456",
-        input={"path": "src/cli.py"},
-        name="read_file",
-        type="tool_use",
-    )
-    tool_response = Message.model_construct(
-        id="message-1",
-        content=[tool_call, second_tool_call],
-        model="test-model",
-        role="assistant",
-        stop_reason="tool_use",
-        stop_sequence=None,
-        type="message",
-        usage=None,
-    )
-    final_response = Message.model_construct(
-        id="message-2",
-        content=[TextBlock.model_construct(text="The file is ready.", type="text")],
-        model="test-model",
-        role="assistant",
-        stop_reason="end_turn",
-        stop_sequence=None,
-        type="message",
-        usage=None,
+    final_response = LLMResponse(
+        content="The files are ready.",
+        tool_calls=[],
+        finish_reason="stop",
     )
 
     class FakeLLMClient:
@@ -65,11 +54,11 @@ def test_agent_loop_executes_tool_then_returns_final_answer() -> None:
             system_prompt: str,
             tools,
             on_text,
-        ) -> Message:
+        ) -> LLMResponse:
             self.calls.append((list(messages), system_prompt, tools))
             response = next(self.responses)
-            if response.stop_reason == "end_turn":
-                on_text("The file is ready.")
+            if response.content:
+                on_text(response.content)
             return response
 
     registry = ToolRegistry()
@@ -92,62 +81,71 @@ def test_agent_loop_executes_tool_then_returns_final_answer() -> None:
 
     assert len(client.calls) == 2
     assert client.calls[0][2] == registry.get_definitions()
-    assert client.calls[1][0][-1] == {
-        "role": "user",
-        "content": [
+    assert client.calls[1][0][-3] == {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
             {
-                "type": "tool_result",
-                "tool_use_id": "toolu_123",
-                "content": "contents of src/main.py",
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"path": "src/main.py"}',
+                },
             },
             {
-                "type": "tool_result",
-                "tool_use_id": "toolu_456",
-                "content": "contents of src/cli.py",
+                "id": "call_456",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"path": "src/cli.py"}',
+                },
             },
         ],
     }
+    assert client.calls[1][0][-2:] == [
+        {
+        "role": "tool",
+        "tool_call_id": "call_123",
+        "name": "read_file",
+        "content": "contents of src/main.py",
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_456",
+            "name": "read_file",
+            "content": "contents of src/cli.py",
+        },
+    ]
     assert displayed_tool_calls == [
         ("read_file", {"path": "src/main.py"}),
         ("read_file", {"path": "src/cli.py"}),
     ]
-    assert streamed_text == ["The file is ready."]
-    assert messages[-1]["content"] == final_response.content
+    assert streamed_text == ["The files are ready."]
+    assert messages[-1] == {"role": "assistant", "content": "The files are ready."}
 
 
 def test_agent_loop_enforces_iteration_limit() -> None:
-    tool_response = Message.model_construct(
-        id="message-1",
-        content=[
-            ToolUseBlock.model_construct(
-                id="toolu_123",
-                input={},
-                name="read_file",
-                type="tool_use",
-            )
-        ],
-        model="test-model",
-        role="assistant",
-        stop_reason="tool_use",
-        stop_sequence=None,
-        type="message",
-        usage=None,
+    tool_response = LLMResponse(
+        content=None,
+        tool_calls=[ToolCall(id="call_123", name="read_file", arguments={})],
+        finish_reason="tool_calls",
     )
 
     class FakeLLMClient:
         def stream_response(
             self, messages, system_prompt, tools, on_text
-        ) -> Message:
+        ) -> LLMResponse:
             assert messages == []
             assert system_prompt == "system"
             assert tools == registry.get_definitions()
-            on_text("Thinking")
+            on_text("Working")
             return tool_response
 
     registry = ToolRegistry()
     registry.register(ReadTool())
     streamed_text = []
-    tool_calls = []
+    displayed_tools = []
 
     with pytest.raises(RuntimeError, match="maximum of 1 iterations"):
         run_agent_loop(
@@ -156,10 +154,10 @@ def test_agent_loop_enforces_iteration_limit() -> None:
             tool_registry=registry,
             system_prompt="system",
             on_text=streamed_text.append,
-            on_tool_call=lambda name, arguments: tool_calls.append(
+            on_tool_call=lambda name, arguments: displayed_tools.append(
                 (name, arguments)
             ),
             max_iterations=1,
         )
-    assert streamed_text == ["Thinking"]
-    assert tool_calls == []
+    assert streamed_text == ["Working"]
+    assert displayed_tools == []

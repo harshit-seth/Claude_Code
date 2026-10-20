@@ -23,6 +23,7 @@ from claude_code.context import ContextManager, TokenUsage
 from claude_code.llm import LLMClient
 from claude_code.loop import run_agent_loop
 from claude_code.memory import load_project_instructions
+from claude_code.mcp_client import MCPClient
 from claude_code.permissions import PermissionManager
 
 SYSTEM_PROMPT = "You are a helpful coding assistant."
@@ -91,6 +92,9 @@ def main(argv: list[str] | None = None) -> None:
     tool_registry.register(EditFileTool(project_root))
 
     tool_registry.register(BashTool(project_root))
+    mcp_client = MCPClient(project_root)
+    for failure in mcp_client.start(tool_registry):
+        console.print(f"[yellow]Warning: {failure}[/yellow]")
 
     def show_diff(diff: str) -> None:
         """Render a colored unified diff before requesting permission."""
@@ -145,104 +149,109 @@ def main(argv: list[str] | None = None) -> None:
         )
         console.print()
 
-    while True:
-        try:
-            user_input = session.prompt("You> ")
-        except (EOFError, KeyboardInterrupt):
-            console.print()
-            break
+    try:
+        while True:
+            try:
+                user_input = session.prompt("You> ")
+            except (EOFError, KeyboardInterrupt):
+                console.print()
+                break
 
-        command = user_input.strip()
-        if command == "/exit":
-            break
-        if command == "/clear":
-            history.clear()
-            console.clear()
-            continue
-        if command == "/init":
-            history.append({"role": "user", "content": INIT_INSTRUCTIONS})
-            run_turn(
-                history,
-                init_tool_registry,
-                build_system_prompt(project_root, project_instructions),
-            )
-            project_instructions = load_project_instructions(project_root)
-            continue
-        if command == "/plan" or command.startswith("/plan "):
-            task = command[len("/plan") :].strip()
-            if not task:
-                try:
-                    task = session.prompt("Plan task> ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    console.print()
-                    continue
-            if not task:
+            command = user_input.strip()
+            if command == "/exit":
+                break
+            if command == "/clear":
+                history.clear()
+                console.clear()
                 continue
-
-            plan_messages = [dict(message) for message in history]
-            plan_messages.append({"role": "user", "content": task})
-            plan_complete = False
-            while True:
+            if command == "/init":
+                history.append({"role": "user", "content": INIT_INSTRUCTIONS})
                 run_turn(
-                    plan_messages,
-                    read_only_tool_registry,
-                    build_system_prompt(project_root, project_instructions)
-                    + f"\n\n{PLAN_INSTRUCTIONS}",
+                    history,
+                    init_tool_registry,
+                    build_system_prompt(project_root, project_instructions),
                 )
-                while True:
+                project_instructions = load_project_instructions(project_root)
+                continue
+            if command == "/plan" or command.startswith("/plan "):
+                task = command[len("/plan") :].strip()
+                if not task:
                     try:
-                        decision = session.prompt(
-                            "Plan decision [a] approve, [r] revise, [c] cancel: "
-                        ).strip().lower()
+                        task = session.prompt("Plan task> ").strip()
                     except (EOFError, KeyboardInterrupt):
                         console.print()
-                        decision = "c"
+                        continue
+                if not task:
+                    continue
 
-                    if decision in {"a", "approve"}:
-                        history[:] = plan_messages
-                        history.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "I approve the plan above. Execute it now, "
-                                    "asking for permission before mutating tools."
-                                ),
-                            }
-                        )
-                        run_turn(
-                            history,
-                            tool_registry,
-                            build_system_prompt(project_root, project_instructions),
-                        )
-                        plan_complete = True
-                        break
-                    if decision in {"r", "revise"}:
+                plan_messages = [dict(message) for message in history]
+                plan_messages.append({"role": "user", "content": task})
+                plan_complete = False
+                while True:
+                    run_turn(
+                        plan_messages,
+                        read_only_tool_registry,
+                        build_system_prompt(project_root, project_instructions)
+                        + f"\n\n{PLAN_INSTRUCTIONS}",
+                    )
+                    while True:
                         try:
-                            revision = session.prompt("Plan revision> ").strip()
+                            decision = session.prompt(
+                                "Plan decision [a] approve, [r] revise, [c] cancel: "
+                            ).strip().lower()
                         except (EOFError, KeyboardInterrupt):
                             console.print()
-                            revision = ""
-                        if revision:
-                            plan_messages.append(
-                                {"role": "user", "content": revision}
-                            )
-                            break
-                        console.print("A revision cannot be empty.")
-                        continue
-                    if decision in {"c", "cancel"}:
-                        console.print("Plan cancelled.")
-                        plan_complete = True
-                        break
-                    console.print("Choose approve, revise, or cancel.")
-                if plan_complete:
-                    break
-            continue
-        if not command:
-            continue
+                            decision = "c"
 
-        history.append({"role": "user", "content": user_input})
-        run_turn(
-            history,
-            tool_registry,
-            build_system_prompt(project_root, project_instructions),
-        )
+                        if decision in {"a", "approve"}:
+                            history[:] = plan_messages
+                            history.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "I approve the plan above. Execute it now, "
+                                        "asking for permission before mutating tools."
+                                    ),
+                                }
+                            )
+                            run_turn(
+                                history,
+                                tool_registry,
+                                build_system_prompt(
+                                    project_root, project_instructions
+                                ),
+                            )
+                            plan_complete = True
+                            break
+                        if decision in {"r", "revise"}:
+                            try:
+                                revision = session.prompt("Plan revision> ").strip()
+                            except (EOFError, KeyboardInterrupt):
+                                console.print()
+                                revision = ""
+                            if revision:
+                                plan_messages.append(
+                                    {"role": "user", "content": revision}
+                                )
+                                break
+                            console.print("A revision cannot be empty.")
+                            continue
+                        if decision in {"c", "cancel"}:
+                            console.print("Plan cancelled.")
+                            plan_complete = True
+                            break
+                        console.print("Choose approve, revise, or cancel.")
+                    if plan_complete:
+                        break
+                continue
+            if not command:
+                continue
+
+            history.append({"role": "user", "content": user_input})
+            run_turn(
+                history,
+                tool_registry,
+                build_system_prompt(project_root, project_instructions),
+            )
+    finally:
+        mcp_client.close()

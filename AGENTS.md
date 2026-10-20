@@ -32,6 +32,10 @@ A terminal coding agent written in Python, built as a portfolio project for SDE1
   explores the repository and applies the existing tool approval policy before
   writing that file.
 - `/plan` uses only read-only tools until the user approves the plan.
+- MCP servers can be configured in `.shree/mcp.json` under `mcpServers`, with
+  each server specifying a `command` and optional string-list `args`; their
+  configured commands run as local subprocesses, tools are namespaced, and all
+  MCP tools require mutating-tool approval.
 
 ## Run tests
 

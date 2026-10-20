@@ -48,6 +48,8 @@ class PermissionManager:
     @staticmethod
     def classify_tool(tool_name: str) -> ToolPermission:
         """Classify known read-only tools; treat all others as mutating."""
+        if "__" in tool_name:
+            return ToolPermission.MUTATING
         if tool_name in READ_ONLY_TOOLS:
             return ToolPermission.READ_ONLY
         return ToolPermission.MUTATING

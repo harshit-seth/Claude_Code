@@ -23,6 +23,7 @@ def run_agent_loop(
     context_manager: ContextManager,
     on_token_usage: Callable[[TokenUsage], None],
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    on_message: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     """Run model and tool turns, appending each exchange to conversation history."""
     if max_iterations < 1:
@@ -38,7 +39,10 @@ def run_agent_loop(
             tools=tool_definitions,
             on_text=on_text,
         )
-        messages.append(_assistant_message(response))
+        assistant_message = _assistant_message(response)
+        messages.append(assistant_message)
+        if on_message is not None:
+            on_message(assistant_message)
 
         if not response.tool_calls:
             return
@@ -58,6 +62,9 @@ def run_agent_loop(
             for call in response.tool_calls
         ]
         messages.extend(tool_results)
+        if on_message is not None:
+            for message in tool_results:
+                on_message(message)
 
 
 def _assistant_message(response: LLMResponse) -> dict[str, Any]:

@@ -10,6 +10,7 @@ from claude_code.llm import LLMResponse
 def test_main_streams_reply_and_exits(monkeypatch, capsys) -> None:
     prompts = iter(["Hello", "/clear", "Again", "/exit"])
     received_messages = []
+    saved_sessions = []
 
     class FakeSession:
         def prompt(self, message: str) -> str:
@@ -49,6 +50,13 @@ def test_main_streams_reply_and_exits(monkeypatch, capsys) -> None:
         "ContextManager",
         lambda: ContextManager(token_counter=lambda messages: len(messages) + 11),
     )
+    monkeypatch.setattr(
+        cli,
+        "append_session_log",
+        lambda transcript, project_root, started_at: saved_sessions.append(
+            list(transcript)
+        ),
+    )
 
     cli.main([])
 
@@ -59,6 +67,14 @@ def test_main_streams_reply_and_exits(monkeypatch, capsys) -> None:
     output = capsys.readouterr().out
     assert output.count("Hi there") == 2
     assert output.count("tokens 12/131,072") == 2
+    assert saved_sessions == [
+        [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+            {"role": "user", "content": "Again"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
+    ]
 
 
 def test_yolo_flag_displays_warning_and_exits(monkeypatch, capsys) -> None:
@@ -74,6 +90,7 @@ def test_yolo_flag_displays_warning_and_exits(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(api_key="test-key"))
     monkeypatch.setattr(cli, "LLMClient", FakeClient)
     monkeypatch.setattr(cli, "PromptSession", FakeSession)
+    monkeypatch.setattr(cli, "append_session_log", lambda *_args: None)
 
     cli.main(["--yolo"])
 

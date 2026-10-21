@@ -36,6 +36,39 @@ def _configure_cli(monkeypatch, tmp_path: Path, prompts: list[str]) -> None:
         "ContextManager",
         lambda: ContextManager(token_counter=lambda messages: len(messages)),
     )
+    monkeypatch.setattr(cli, "append_session_log", lambda *_args: None)
+
+
+def test_prompt_runs_one_noninteractive_turn_and_reports_usage(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    _configure_cli(monkeypatch, tmp_path, [])
+    saved_sessions = []
+
+    def save_session(transcript, project_root, started_at):
+        saved_sessions.append((list(transcript), project_root, started_at))
+
+    def fake_run_agent_loop(messages, **kwargs: Any) -> None:
+        assistant_message = {"role": "assistant", "content": "Done"}
+        messages.append(assistant_message)
+        kwargs["on_message"](assistant_message)
+        kwargs["on_token_usage"](cli.TokenUsage(17, estimated=True))
+
+    monkeypatch.setattr(cli, "append_session_log", save_session)
+    monkeypatch.setattr(cli, "run_agent_loop", fake_run_agent_loop)
+
+    cli.main(["--prompt", "Fix the bug", "--yolo"])
+
+    output = capsys.readouterr().out
+    assert "EVAL_TOKENS_USED=17 EVAL_TOKENS_ESTIMATED=true" in output
+    assert len(saved_sessions) == 1
+    assert saved_sessions[0][0] == [
+        {"role": "user", "content": "Fix the bug"},
+        {"role": "assistant", "content": "Done"},
+    ]
+    assert saved_sessions[0][1] == tmp_path
 
 
 def _tool_names(tool_registry) -> set[str]:

@@ -88,6 +88,7 @@ def test_agent_loop_executes_tool_then_returns_final_answer() -> None:
     streamed_text = []
     displayed_tool_calls = []
     token_usages = []
+    observed_messages = []
 
     run_agent_loop(
         messages=messages,
@@ -101,6 +102,7 @@ def test_agent_loop_executes_tool_then_returns_final_answer() -> None:
         permission_manager=_allow_all_permissions(),
         context_manager=ContextManager(token_counter=lambda messages: len(messages)),
         on_token_usage=token_usages.append,
+        on_message=observed_messages.append,
     )
 
     assert len(client.calls) == 2
@@ -147,6 +149,12 @@ def test_agent_loop_executes_tool_then_returns_final_answer() -> None:
     ]
     assert streamed_text == ["The files are ready."]
     assert messages[-1] == {"role": "assistant", "content": "The files are ready."}
+    assert [message["role"] for message in observed_messages] == [
+        "assistant",
+        "tool",
+        "tool",
+        "assistant",
+    ]
 
 
 def test_agent_loop_enforces_iteration_limit() -> None:

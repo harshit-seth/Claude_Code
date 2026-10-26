@@ -14,14 +14,18 @@ dependencies = [
     "rich",
     "prompt_toolkit",
     "python-dotenv",
+    "fastapi",
+    "sqlalchemy>=2,<3",
+    "uvicorn[standard]",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "httpx"]
 
 [project.scripts]
 claude-code = "claude_code.cli:main"
 cc = "claude_code.cli:main"
+shree = "agent.server.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

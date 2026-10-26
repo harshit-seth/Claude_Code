@@ -1,5 +1,8 @@
 """Run an explicitly approved shell command in the project root."""
 
+import asyncio
+import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -54,6 +57,94 @@ class BashTool(Tool):
                 _to_text(error.stdout),
                 _to_text(error.stderr),
             )
+
+    async def run_async(
+        self,
+        cancellation_event: asyncio.Event,
+        **kwargs: Any,
+    ) -> str:
+        """Run a shell command while allowing the process to be terminated."""
+        command = kwargs["command"]
+        if cancellation_event.is_set():
+            raise asyncio.CancelledError
+        process_options: dict[str, Any] = {}
+        if os.name == "nt":
+            process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            process_options["start_new_session"] = True
+        process = subprocess.Popen(
+            command,
+            cwd=self._project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            **process_options,
+        )
+        communicate_task = asyncio.create_task(asyncio.to_thread(process.communicate))
+        cancel_task = asyncio.create_task(cancellation_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {communicate_task, cancel_task},
+                timeout=COMMAND_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancel_task in done and cancellation_event.is_set():
+                _signal_process_tree(process, terminate=True)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(communicate_task), timeout=2
+                    )
+                except TimeoutError:
+                    _signal_process_tree(process, terminate=False)
+                    communicate_task.cancel()
+                    await asyncio.gather(
+                        communicate_task, return_exceptions=True
+                    )
+                raise asyncio.CancelledError
+            if communicate_task not in done:
+                _signal_process_tree(process, terminate=False)
+                stdout, stderr = await communicate_task
+                return _format_result(
+                    command,
+                    "timeout",
+                    _to_text(stdout),
+                    _to_text(stderr),
+                )
+            stdout, stderr = communicate_task.result()
+            return _format_result(
+                command,
+                str(process.returncode),
+                stdout,
+                stderr,
+            )
+        finally:
+            cancel_task.cancel()
+            await asyncio.gather(cancel_task, return_exceptions=True)
+
+
+def _signal_process_tree(
+    process: subprocess.Popen[str], terminate: bool
+) -> None:
+    """Signal a shell process and its children during cancellation or timeout."""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        if terminate:
+            try:
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+                return
+            except (OSError, ValueError):
+                pass
+        process.kill()
+        return
+
+    import signal as posix_signal
+
+    process_signal = posix_signal.SIGTERM if terminate else posix_signal.SIGKILL
+    try:
+        os.killpg(process.pid, process_signal)
+    except ProcessLookupError:
+        pass
 
 
 def _format_result(command: str, exit_code: str, stdout: str, stderr: str) -> str:

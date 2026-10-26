@@ -1,6 +1,7 @@
 """Command-line entry point."""
 
 import argparse
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,12 +21,21 @@ from agent.tools import (
     WriteFileTool,
 )
 from claude_code.config import load_config
-from claude_code.context import ContextManager, TokenUsage
+from claude_code.context import ContextManager
+from claude_code.events import (
+    DoneEvent,
+    ErrorEvent,
+    PermissionRequestEvent,
+    TextDeltaEvent,
+    ToolCallEvent,
+    UsageEvent,
+)
 from claude_code.llm import LLMClient
-from claude_code.loop import run_agent_loop
+from claude_code.loop import run_agent_events
 from claude_code.memory import load_project_instructions
 from claude_code.mcp_client import MCPClient
-from claude_code.permissions import PermissionManager
+from claude_code.permissions import TerminalPermissionHandler
+from claude_code.session import AgentSession
 from claude_code.session_log import append_session_log
 
 SYSTEM_PROMPT = "You are a helpful coding assistant."
@@ -80,6 +90,7 @@ def main(argv: list[str] | None = None) -> None:
 
     config = load_config()
     client = LLMClient(config.api_key)
+    event_loop = asyncio.new_event_loop()
     session: PromptSession[str] = PromptSession()
     console = Console()
     history: list[dict[str, Any]] = []
@@ -112,11 +123,18 @@ def main(argv: list[str] | None = None) -> None:
         """Render a colored unified diff before requesting permission."""
         console.print(Syntax(diff, "diff", theme="monokai", word_wrap=True))
 
-    permission_manager = PermissionManager(
+    permission_manager = TerminalPermissionHandler(
         project_root=project_root,
         prompt=lambda message: session.prompt(message),
         show_diff=show_diff,
         yolo=arguments.yolo,
+    )
+    agent_session = AgentSession(
+        project_root=project_root,
+        tool_registry=tool_registry,
+        permission_handler=permission_manager,
+        context_manager=context_manager,
+        messages=history,
     )
     read_only_tool_registry = tool_registry.filtered(READ_ONLY_TOOL_NAMES)
     init_tool_registry = tool_registry.filtered(
@@ -128,42 +146,61 @@ def main(argv: list[str] | None = None) -> None:
         active_registry: ToolRegistry,
         system_prompt: str,
     ) -> None:
-        """Run one model/tool interaction and show token usage."""
+        """Consume the typed async event stream using terminal rendering."""
         nonlocal total_tokens_used, token_usage_estimated
         console.print("Claude> ", end="", markup=False)
 
-        def show_tool_call(name: str, arguments: dict[str, Any]) -> None:
-            """Render the requested tool call."""
+        def show_tool_call(event: ToolCallEvent) -> None:
+            """Render a requested tool call."""
+            name = event.name
+            arguments = event.args
             argument_text = ", ".join(str(value) for value in arguments.values())
             console.print()
             console.print(f"→ {name}({argument_text})", markup=False)
             console.print("Claude> ", end="", markup=False)
 
-        def show_token_usage(usage: TokenUsage) -> None:
-            """Display the current token usage and whether it is estimated."""
+        async def consume_events() -> None:
+            """Translate agent events into the existing terminal experience."""
             nonlocal total_tokens_used, token_usage_estimated
-            total_tokens_used += usage.count
-            token_usage_estimated = token_usage_estimated or usage.estimated
-            estimate_marker = "~" if usage.estimated else ""
-            console.print(
-                f"[dim]tokens {estimate_marker}{usage.count:,}/"
-                f"{context_manager.model_context_window:,}[/dim]"
-            )
+            cancellation_event = asyncio.Event()
+            async for event in run_agent_events(
+                messages=messages,
+                llm_client=client,
+                tool_registry=active_registry,
+                system_prompt=system_prompt,
+                permission_handler=agent_session.permission_handler,
+                context_manager=agent_session.context_manager,
+                cancellation_event=cancellation_event,
+                on_message=lambda message: transcript.append(dict(message)),
+            ):
+                if isinstance(event, TextDeltaEvent):
+                    console.print(
+                        event.text, end="", markup=False, highlight=False
+                    )
+                elif isinstance(event, ToolCallEvent):
+                    show_tool_call(event)
+                elif isinstance(event, PermissionRequestEvent):
+                    continue
+                elif isinstance(event, UsageEvent):
+                    total_tokens_used += event.input_tokens + event.output_tokens
+                    token_usage_estimated = (
+                        token_usage_estimated or event.estimated
+                    )
+                    estimate_marker = "~" if event.estimated else ""
+                    console.print(
+                        f"[dim]tokens {estimate_marker}"
+                        f"{event.input_tokens:,}/"
+                        f"{agent_session.context_manager.model_context_window:,}"
+                        f" ({event.context_percent:.1f}% context)[/dim]"
+                    )
+                elif isinstance(event, ErrorEvent):
+                    if "maximum of" in event.message:
+                        raise RuntimeError(event.message)
+                    console.print(f"[red]{event.message}[/red]")
+                elif isinstance(event, DoneEvent) and event.cancelled:
+                    console.print("[yellow]Turn cancelled.[/yellow]")
 
-        run_agent_loop(
-            messages=messages,
-            llm_client=client,
-            tool_registry=active_registry,
-            system_prompt=system_prompt,
-            on_text=lambda text: console.print(
-                text, end="", markup=False, highlight=False
-            ),
-            on_tool_call=show_tool_call,
-            permission_manager=permission_manager,
-            context_manager=context_manager,
-            on_token_usage=show_token_usage,
-            on_message=lambda message: transcript.append(dict(message)),
-        )
+        event_loop.run_until_complete(consume_events())
         console.print()
 
     def append_user_message(
@@ -290,7 +327,17 @@ def main(argv: list[str] | None = None) -> None:
         try:
             mcp_client.close()
         finally:
-            append_session_log(transcript, project_root, session_started_at)
+            try:
+                close_client = getattr(client, "aclose", None)
+                if close_client is not None:
+                    event_loop.run_until_complete(close_client())
+            finally:
+                try:
+                    append_session_log(
+                        transcript, project_root, session_started_at
+                    )
+                finally:
+                    event_loop.close()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Tests for the core agent interaction loop."""
 
+import asyncio
 from typing import Any
 from pathlib import Path
 
@@ -7,9 +8,17 @@ import pytest
 
 from agent.tools.base import Tool, ToolRegistry
 from claude_code.context import ContextManager
+from claude_code.events import (
+    DoneEvent,
+    PermissionRequestEvent,
+    TextDeltaEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    UsageEvent,
+)
 from claude_code.llm import LLMResponse, ToolCall
-from claude_code.loop import run_agent_loop
-from claude_code.permissions import PermissionManager
+from claude_code.loop import run_agent_events, run_agent_loop
+from claude_code.permissions import PermissionManager, WebPermissionHandler
 
 
 def _allow_all_permissions() -> PermissionManager:
@@ -283,3 +292,228 @@ def test_agent_loop_sends_denial_to_model_without_running_tool(tmp_path: Path) -
     }
     assert streamed_text == ["I will not make that change."]
     assert displayed_tool_calls == [("write_file", {"path": "new.txt", "content": "data"})]
+
+
+def test_event_stream_yields_text_usage_tool_events_and_done() -> None:
+    responses = iter(
+        [
+            LLMResponse(
+                content="Checking it.",
+                tool_calls=[
+                    ToolCall(
+                        id="call_read",
+                        name="read_file",
+                        arguments={"path": "src.py"},
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            LLMResponse(
+                content="All done.",
+                tool_calls=[],
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    class FakeLLMClient:
+        def stream_response(self, messages, system_prompt, tools, on_text):
+            response = next(responses)
+            if response.content:
+                on_text(response.content)
+            return response
+
+    registry = ToolRegistry()
+    registry.register(ReadTool())
+    permission_handler = PermissionManager(
+        project_root=Path.cwd(),
+        prompt=lambda _prompt: "y",
+        show_diff=lambda _diff: None,
+        yolo=True,
+    )
+
+    async def collect_events():
+        return [
+            event
+            async for event in run_agent_events(
+                messages=[],
+                llm_client=FakeLLMClient(),
+                tool_registry=registry,
+                system_prompt="system",
+                permission_handler=permission_handler,
+                context_manager=ContextManager(
+                    token_counter=lambda messages: 10
+                ),
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+
+    assert [event.type for event in events] == [
+        "text_delta",
+        "usage",
+        "tool_call",
+        "tool_result",
+        "text_delta",
+        "usage",
+        "done",
+    ]
+    assert isinstance(events[0], TextDeltaEvent)
+    assert isinstance(events[1], UsageEvent)
+    assert events[1].input_tokens == 10
+    assert isinstance(events[2], ToolCallEvent)
+    assert events[2].args == {"path": "src.py"}
+    assert isinstance(events[3], ToolResultEvent)
+    assert events[3].output == "contents of src.py"
+    assert events[-1] == DoneEvent(type="done", cancelled=False)
+
+
+def test_event_stream_waits_for_web_permission_decision(tmp_path: Path) -> None:
+    class MutatingTool(Tool):
+        name = "write_file"
+        description = "Write a file."
+        input_schema = {"type": "object", "properties": {}}
+
+        def run(self, **kwargs: Any) -> str:
+            return f"wrote {kwargs['path']}"
+
+    class FakeLLMClient:
+        def stream_response(self, messages, system_prompt, tools, on_text):
+            if messages and messages[-1].get("role") == "tool":
+                return LLMResponse("Finished.", [], "stop")
+            return LLMResponse(
+                None,
+                [
+                    ToolCall(
+                        "call_write",
+                        "write_file",
+                        {"path": "created.txt", "content": "hello"},
+                    )
+                ],
+                "tool_calls",
+            )
+
+    registry = ToolRegistry()
+    registry.register(MutatingTool())
+    handler = WebPermissionHandler(tmp_path)
+    messages = []
+    cancellation_event = asyncio.Event()
+
+    async def exercise_permission():
+        events = run_agent_events(
+            messages=messages,
+            llm_client=FakeLLMClient(),
+            tool_registry=registry,
+            system_prompt="system",
+            permission_handler=handler,
+            context_manager=ContextManager(token_counter=lambda _messages: 1),
+            cancellation_event=cancellation_event,
+        )
+        permission_event = None
+        async for event in events:
+            if isinstance(event, PermissionRequestEvent):
+                permission_event = event
+                handler.submit_decision(event.id, "allow_once")
+        return permission_event
+
+    request = asyncio.run(exercise_permission())
+
+    assert request is not None
+    assert request.tool == "write_file"
+    assert request.diff is not None
+    assert "+hello" in request.diff
+    assert any(message.get("role") == "tool" for message in messages)
+
+
+def test_event_stream_cancels_pending_web_permission(tmp_path: Path) -> None:
+    class MutatingTool(Tool):
+        name = "write_file"
+        description = "Write a file."
+        input_schema = {"type": "object", "properties": {}}
+
+        def run(self, **kwargs: Any) -> str:
+            return "written"
+
+    class FakeLLMClient:
+        def stream_response(self, messages, system_prompt, tools, on_text):
+            return LLMResponse(
+                None,
+                [
+                    ToolCall(
+                        "call_write",
+                        "write_file",
+                        {"path": "created.txt", "content": "hello"},
+                    )
+                ],
+                "tool_calls",
+            )
+
+    async def cancel_permission_request():
+        registry = ToolRegistry()
+        registry.register(MutatingTool())
+        handler = WebPermissionHandler(tmp_path)
+        cancellation_event = asyncio.Event()
+        events = run_agent_events(
+            messages=[],
+            llm_client=FakeLLMClient(),
+            tool_registry=registry,
+            system_prompt="system",
+            permission_handler=handler,
+            context_manager=ContextManager(token_counter=lambda _messages: 1),
+            cancellation_event=cancellation_event,
+        )
+        async for event in events:
+            if isinstance(event, PermissionRequestEvent):
+                cancellation_event.set()
+                request_id = event.id
+        return handler, request_id
+
+    handler, request_id = asyncio.run(cancel_permission_request())
+
+    with pytest.raises(ValueError, match="No pending permission request"):
+        handler.submit_decision(request_id, "allow_once")
+
+
+def test_event_stream_stops_when_cancelled_during_model_stream() -> None:
+    class FakeLLMClient:
+        async def stream_response_async(
+            self,
+            messages,
+            system_prompt,
+            tools,
+            on_text,
+            cancellation_event,
+        ):
+            await cancellation_event.wait()
+            raise asyncio.CancelledError
+
+    async def run_and_cancel():
+        cancellation_event = asyncio.Event()
+        registry = ToolRegistry()
+
+        async def collect():
+            return [
+                event
+                async for event in run_agent_events(
+                    messages=[],
+                    llm_client=FakeLLMClient(),
+                    tool_registry=registry,
+                    system_prompt="system",
+                    permission_handler=PermissionManager(
+                        project_root=Path.cwd(),
+                        prompt=lambda _prompt: "n",
+                        show_diff=lambda _diff: None,
+                    ),
+                    context_manager=ContextManager(token_counter=lambda _messages: 1),
+                    cancellation_event=cancellation_event,
+                )
+            ]
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0)
+        cancellation_event.set()
+        return await task
+
+    events = asyncio.run(run_and_cancel())
+
+    assert events[-1] == DoneEvent(type="done", cancelled=True)

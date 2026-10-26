@@ -1,5 +1,6 @@
 """Base classes and registry for agent tools."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from pathlib import Path
@@ -16,6 +17,19 @@ class Tool(ABC):
     @abstractmethod
     def run(self, **kwargs: Any) -> str:
         """Execute the tool and return its textual result."""
+
+    async def run_async(
+        self,
+        cancellation_event: asyncio.Event,
+        **kwargs: Any,
+    ) -> str:
+        """Run synchronous tools off the event loop, checking cancellation around it."""
+        if cancellation_event.is_set():
+            raise asyncio.CancelledError
+        result = await asyncio.to_thread(self.run, **kwargs)
+        if cancellation_event.is_set():
+            raise asyncio.CancelledError
+        return result
 
 
 class ToolRegistry:
@@ -65,6 +79,23 @@ class ToolRegistry:
             return f"Error: unknown tool '{name}'."
         try:
             return tool.run(**kwargs)
+        except Exception as error:
+            return f"Error running tool '{name}': {error}"
+
+    async def execute_async(
+        self,
+        name: str,
+        cancellation_event: asyncio.Event,
+        **kwargs: Any,
+    ) -> str:
+        """Execute a tool asynchronously and convert tool failures to text."""
+        tool = self._tools.get(name)
+        if tool is None:
+            return f"Error: unknown tool '{name}'."
+        try:
+            return await tool.run_async(cancellation_event, **kwargs)
+        except asyncio.CancelledError:
+            raise
         except Exception as error:
             return f"Error running tool '{name}': {error}"
 

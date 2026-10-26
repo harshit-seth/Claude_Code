@@ -6,6 +6,7 @@ from typing import Any
 
 import claude_code.cli as cli
 from claude_code.context import ContextManager
+from claude_code.events import DoneEvent, TextDeltaEvent, UsageEvent
 
 
 class FakeSession:
@@ -50,14 +51,22 @@ def test_prompt_runs_one_noninteractive_turn_and_reports_usage(
     def save_session(transcript, project_root, started_at):
         saved_sessions.append((list(transcript), project_root, started_at))
 
-    def fake_run_agent_loop(messages, **kwargs: Any) -> None:
+    async def fake_run_agent_events(messages, **kwargs: Any):
         assistant_message = {"role": "assistant", "content": "Done"}
         messages.append(assistant_message)
         kwargs["on_message"](assistant_message)
-        kwargs["on_token_usage"](cli.TokenUsage(17, estimated=True))
+        yield TextDeltaEvent(type="text_delta", text="Done")
+        yield UsageEvent(
+            type="usage",
+            input_tokens=12,
+            output_tokens=5,
+            context_percent=0.01,
+            estimated=True,
+        )
+        yield DoneEvent(type="done", cancelled=False)
 
     monkeypatch.setattr(cli, "append_session_log", save_session)
-    monkeypatch.setattr(cli, "run_agent_loop", fake_run_agent_loop)
+    monkeypatch.setattr(cli, "run_agent_events", fake_run_agent_events)
 
     cli.main(["--prompt", "Fix the bug", "--yolo"])
 
@@ -82,19 +91,19 @@ def test_plan_uses_read_only_tools_until_approved(monkeypatch, tmp_path: Path) -
     _configure_cli(monkeypatch, tmp_path, ["/plan Add a feature", "approve", "/exit"])
     calls: list[tuple[set[str], str, list[dict[str, Any]]]] = []
 
-    def fake_run_agent_loop(
+    async def fake_run_agent_events(
         messages: list[dict[str, Any]],
-        tool_registry,
         system_prompt: str,
+        tool_registry,
         **_kwargs: Any,
-    ) -> None:
+    ):
         assert isinstance(_kwargs["llm_client"], FakeClient)
-        assert callable(_kwargs["on_text"])
         calls.append((_tool_names(tool_registry), system_prompt, list(messages)))
         if "Plan mode" in system_prompt:
             messages.append({"role": "assistant", "content": "1. Implement it."})
+        yield DoneEvent(type="done", cancelled=False)
 
-    monkeypatch.setattr(cli, "run_agent_loop", fake_run_agent_loop)
+    monkeypatch.setattr(cli, "run_agent_events", fake_run_agent_events)
 
     cli.main([])
 
@@ -117,17 +126,17 @@ def test_plan_revision_replans_read_only_and_can_be_cancelled(
     )
     calls: list[tuple[set[str], list[dict[str, Any]]]] = []
 
-    def fake_run_agent_loop(
+    async def fake_run_agent_events(
         messages: list[dict[str, Any]],
         tool_registry,
         **_kwargs: Any,
-    ) -> None:
+    ):
         assert isinstance(_kwargs["llm_client"], FakeClient)
-        assert callable(_kwargs["on_text"])
         calls.append((_tool_names(tool_registry), list(messages)))
         messages.append({"role": "assistant", "content": "1. Implement it."})
+        yield DoneEvent(type="done", cancelled=False)
 
-    monkeypatch.setattr(cli, "run_agent_loop", fake_run_agent_loop)
+    monkeypatch.setattr(cli, "run_agent_events", fake_run_agent_events)
 
     cli.main([])
 
@@ -143,21 +152,21 @@ def test_init_limits_tools_and_loads_generated_instructions(
     _configure_cli(monkeypatch, tmp_path, ["/init", "hello", "/exit"])
     calls: list[tuple[set[str], str, list[dict[str, Any]]]] = []
 
-    def fake_run_agent_loop(
+    async def fake_run_agent_events(
         messages: list[dict[str, Any]],
         tool_registry,
         system_prompt: str,
         **_kwargs: Any,
-    ) -> None:
+    ):
         assert isinstance(_kwargs["llm_client"], FakeClient)
-        assert callable(_kwargs["on_text"])
         names = _tool_names(tool_registry)
         calls.append((names, system_prompt, list(messages)))
         if messages[-1]["content"] == cli.INIT_INSTRUCTIONS:
             (tmp_path / "AGENT.md").write_text("Use pytest.", encoding="utf-8")
         messages.append({"role": "assistant", "content": "Done."})
+        yield DoneEvent(type="done", cancelled=False)
 
-    monkeypatch.setattr(cli, "run_agent_loop", fake_run_agent_loop)
+    monkeypatch.setattr(cli, "run_agent_events", fake_run_agent_events)
 
     cli.main([])
 

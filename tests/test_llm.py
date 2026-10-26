@@ -1,5 +1,6 @@
 """Tests for Groq-compatible language model streaming."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -96,6 +97,92 @@ def test_stream_response_yields_text_and_parses_tool_calls(monkeypatch) -> None:
     assert response.tool_calls[0].id == "call_123"
     assert response.tool_calls[0].name == "read_file"
     assert response.tool_calls[0].arguments == {"path": "src/main.py"}
+
+
+def test_async_stream_response_yields_text_and_parses_tool_calls(
+    monkeypatch,
+) -> None:
+    seen = {}
+
+    class FakeStream:
+        def __init__(self) -> None:
+            self.chunks = iter(
+                [
+                    _chunk(content="Async "),
+                    _chunk(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_async",
+                                function=SimpleNamespace(
+                                    name="read_file",
+                                    arguments='{"path":"file.py"}',
+                                ),
+                            )
+                        ],
+                        finish_reason="tool_calls",
+                    ),
+                ]
+            )
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.chunks)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            seen.update(kwargs)
+            return FakeStream()
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs) -> None:
+            seen["async_client"] = kwargs
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(llm, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(
+        llm,
+        "OpenAI",
+        lambda **_kwargs: SimpleNamespace(close=lambda: None),
+    )
+    client = llm.LLMClient("test-key")
+    text_parts = []
+
+    async def stream():
+        return await client.stream_response_async(
+            messages=[{"role": "user", "content": "Read file"}],
+            system_prompt="System prompt",
+            tools=[],
+            on_text=text_parts.append,
+            cancellation_event=asyncio.Event(),
+        )
+
+    response = asyncio.run(stream())
+
+    assert seen["async_client"] == {
+        "api_key": "test-key",
+        "base_url": llm.GROQ_BASE_URL,
+        "max_retries": 0,
+    }
+    assert seen["stream"] is True
+    assert text_parts == ["Async "]
+    assert response.content == "Async "
+    assert response.tool_calls[0].id == "call_async"
+    assert response.tool_calls[0].arguments == {"path": "file.py"}
 
 
 @pytest.mark.parametrize("status_code", [429, 503])
